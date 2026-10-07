@@ -1,0 +1,14 @@
+# Stage I-A: pθ を ±t の幅を 2 に狭めて学習する（run14 と比べる確認用）
+# 実験6で t を広げるほど一クラス判定が悪くなった（t=31: 50.4% → t=15: 57.0% → t=7: 59.7%）。
+# 手がかりはゼロに近い小さな値の中にあると考え、幅を狭める。t=2 は SRM でよく使われる値。
+# 変えるのは truncation_t だけで、前処理（mosaic）・混合分布（画素ごと）・学習の条件は run14 と同じ。
+extends: stage1_photo.yaml
+
+experiment:
+  name: stage1_photo_sdv14_t2
+
+preprocess:
+  truncation_t: 2
+
+train:
+  checkpoint_dir: checkpoints/stage1_photo_t2

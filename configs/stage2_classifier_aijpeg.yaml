@@ -1,0 +1,18 @@
+# Stage II: run16（stage2_classifier.yaml）と同じ作りで、AI画像も JPEG にして学習する（実験15-A）
+# GenImage は本物が全部 JPEG、AI画像が全部 PNG。確認5・6で、形式をそろえると見分ける力が大きく下がった。
+# 学習のときから AI画像を JPEG（品質 70〜95 からランダム）にして、形式の差に頼らずに見分けられるかを見る。
+# stage2_classifier.yaml から変えるのは augmentation.ai_jpeg だけ（pθ・qφ はそのまま）。
+extends: stage2_classifier.yaml
+
+experiment:
+  name: stage2_classifier_sdv14_aijpeg
+
+augmentation:
+  ai_jpeg:
+    enabled: true
+    quality_min: 70
+    quality_max: 95
+
+train:
+  checkpoint_dir: checkpoints/stage2_classifier_aijpeg
+  keep_last_checkpoints: 1

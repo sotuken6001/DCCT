@@ -1,0 +1,20 @@
+# Stage II: t=2 の pθ・qφ の上で分類器を学習する（実験9：run16 と比べる）
+# pθ は実験7（run32）、qφ は stage1_ai_t2.yaml で学習したものを使う。
+# run16 と比べるため、t=2 以外の条件（20エポック × 2,500ステップなど）は run16 と同じ。
+extends: stage2_classifier.yaml
+
+experiment:
+  name: stage2_classifier_sdv14_t2
+
+preprocess:
+  truncation_t: 2
+
+stage2:
+  photo_model_checkpoint: "checkpoints/stage1_photo_t2/best.pt"
+  ai_model_checkpoint: "checkpoints/stage1_ai_t2/best.pt"
+
+train:
+  num_epochs: 20
+  checkpoint_dir: checkpoints/stage2_classifier_t2
+  # Mac の空き容量が少ないので、途中のエポックは最後の1つだけ残す（best.pt は常に残る）
+  keep_last_checkpoints: 1

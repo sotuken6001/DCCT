@@ -1,0 +1,36 @@
+# Stage II: 二値分類器 gψ の学習
+extends: base.yaml
+
+experiment:
+  name: stage2_classifier_sdv14
+  stage: stage2_classifier
+
+data:
+  # real / ai 両方を使う
+  split: train
+
+stage2:
+  # Frozen な pθ / qφ のチェックポイント。
+  # configs/stage1_*.yaml の既定の保存先をそのまま指しているので、Stage I を既定設定で
+  # 走らせたならこのままで良い。別の場所に保存した場合だけ書き換える。
+  photo_model_checkpoint: "checkpoints/stage1_photo/best.pt"
+  ai_model_checkpoint: "checkpoints/stage1_ai/best.pt"
+  # Ablation-A: 使用する条件付きモデルの切替
+  use_photo_model: true
+  use_ai_model: true
+  # Ablation-D: false にすると pθ/qφ にも勾配を通す（full fine-tuning）
+  freeze_conditional_models: true
+
+train:
+  num_epochs: 20
+  checkpoint_dir: checkpoints/stage2_classifier
+  save_every_epoch: 1
+  # 直近いくつのエポックのチェックポイントを残すか（best.pt は常に残る）。
+  # 全エポック残すとディスクを圧迫するため既定は3個。0で無制限
+  keep_last_checkpoints: 3
+  resume_from: null
+
+  # Stage I と同じ考え方で1エポックを区切る。Stage IIは条件付きモデル2本を通すぶん
+  # 1ステップが重いので、まず2,500ステップ/エポックで様子を見る
+  max_steps_per_epoch: 2500
+  max_eval_steps: 100

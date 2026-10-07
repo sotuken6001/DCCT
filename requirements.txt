@@ -1,0 +1,20 @@
+# DCCT再現実装 依存パッケージ
+#
+# Apple Silicon (macOS) では、以下をそのまま pip install -r requirements.txt すれば
+# mps バックエンド対応の torch が入る。
+# Linux/コンテナ上でCPUのみ動かす場合は、事前に以下でCPU版wheelを入れること:
+#   pip install --index-url https://download.pytorch.org/whl/cpu torch torchvision
+
+torch>=2.2
+torchvision>=0.17
+
+numpy>=1.26
+pillow>=10.2          # 画像読み込み・JPEG再エンコード（ロバスト性評価/学習時拡張）
+pyyaml>=6.0           # 実験config
+scikit-learn>=1.4     # Accuracy / AUC / AP
+pandas>=2.2           # レポート集計
+matplotlib>=3.8       # Figure 6相当の折れ線グラフ
+tqdm>=4.66            # 学習・ingest進捗表示
+
+# 開発用
+pytest>=8.0

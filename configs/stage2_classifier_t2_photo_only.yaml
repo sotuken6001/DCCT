@@ -1,0 +1,14 @@
+# Stage II: t=2 の pθ だけで分類器を学習する（実験10：run36 と比べる）
+# 実験9（run36）で、pθ だけの一クラス判定は 60% → 71% と伸びたのに、全体は 86.8% → 88.0% どまりだった。
+# 分類器が qφ（SD で学習）の「SD っぽさ」に頼っているかを確かめるため、qφ を外す（論文の表4 (a) と同じ比較）。
+# run36 から変えるのは use_ai_model だけ。
+extends: stage2_classifier_t2.yaml
+
+experiment:
+  name: stage2_classifier_sdv14_t2_photo_only
+
+stage2:
+  use_ai_model: false
+
+train:
+  checkpoint_dir: checkpoints/stage2_classifier_t2_photo_only

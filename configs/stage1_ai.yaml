@@ -1,0 +1,30 @@
+# Stage I-B: 条件付き分布モデル qφ（AI生成画像で学習）
+extends: base.yaml
+
+experiment:
+  name: stage1_ai_sdv14
+  stage: stage1_ai
+
+data:
+  # qφ は AI生成画像（学習生成器 = SDv1.4）のみで学習する
+  label: ai
+  split: train
+
+train:
+  num_epochs: 20
+  checkpoint_dir: checkpoints/stage1_ai
+  save_every_epoch: 1
+  # 直近いくつのエポックのチェックポイントを残すか（best.pt は常に残る）。
+  # 全エポック残すとディスクを圧迫するため既定は3個。0で無制限
+  keep_last_checkpoints: 3
+  resume_from: null
+
+  # 【実機での見積りに基づく設定】
+  # 学習対象は約15万枚 = 9,607ステップ/エポック（batch 16）。Mac Studio (MPS) の実測は
+  # 約22バッチ/秒なので、フル1エポックは7〜16分、20エポックで2.5〜5時間かかる。
+  # 1.9Mパラメータのモデルに192,000ステップは過剰なため、1エポックを2,500ステップに
+  # 区切り、合計50,000ステップ（約5エポック分のデータを見る）とする。
+  # 毎エポック再シャッフルされるので、エポックごとに違う画像が使われる。
+  max_steps_per_epoch: 2500
+  # 検証はチェックポイント選択に使うだけなので100バッチ（1,600枚）で十分
+  max_eval_steps: 100

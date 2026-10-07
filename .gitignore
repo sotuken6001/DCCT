@@ -1,0 +1,21 @@
+.venv/
+*.egg-info/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# メタデータDB本体とバックアップはコミットしない（スキーマはmigrations/で管理）
+db/*.sqlite3
+db/backups/
+
+# 学習成果物（配布する学習済みモデル weights/*.pt はコミットする）
+checkpoints/**/*.pt
+logs/*
+reports/*
+!logs/.gitkeep
+!reports/.gitkeep
+
+# nohup で長時間コマンドを流すたびにできる
+nohup.out
+
+.DS_Store
