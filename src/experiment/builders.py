@@ -59,6 +59,18 @@ def build_ai_train_transform(config: Config) -> RandomJpeg | None:
     return RandomJpeg(
         int(config.get("augmentation.ai_jpeg.quality_min", 70)),
         int(config.get("augmentation.ai_jpeg.quality_max", 95)),
+        # 実験サ：色の間引き方の割合（例 {"4:4:4": 0.8, "4:2:0": 0.2}）。省くと PIL の初期設定（4:2:0）
+        subsampling_weights=config.get("augmentation.ai_jpeg.subsampling", None),
+    )
+
+
+def build_real_train_transform(config: Config) -> RandomJpeg | None:
+    """学習で本物だけに通す JPEG 再エンコード（`augmentation.real_jpeg`、実験17）。無効なら None。"""
+    if not config.get("augmentation.real_jpeg.enabled", False):
+        return None
+    return RandomJpeg(
+        int(config.get("augmentation.real_jpeg.quality_min", 70)),
+        int(config.get("augmentation.real_jpeg.quality_max", 95)),
     )
 
 

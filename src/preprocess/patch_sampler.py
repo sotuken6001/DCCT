@@ -34,13 +34,30 @@ def load_image_tensor(data: bytes) -> torch.Tensor:
     return tensor.permute(2, 0, 1).float()
 
 
-def jpeg_compress(image: torch.Tensor, quality: int) -> torch.Tensor:
-    """JPEG再エンコードを通した画像を返す（学習時のベナイン摂動／ロバスト性評価に使う）。"""
+# 色の間引き方（PIL の subsampling に渡す値）
+SUBSAMPLING = {"4:4:4": 0, "4:2:2": 1, "4:2:0": 2}
+
+
+def jpeg_bytes(image: torch.Tensor, quality: int, subsampling: str | None = None) -> bytes:
+    """`[3,H,W]`（0〜255）を PIL で JPEG にしたバイト列を返す。
+
+    `subsampling` を省くと、色の間引き方は PIL の初期設定（4:2:0）のまま。
+    GenImage の本物は約8割が 4:4:4（案ク）なので、そろえるときは "4:4:4" を渡す。
+    """
     array = image.clamp(0, 255).round().to(torch.uint8).permute(1, 2, 0).numpy()
     buffer = io.BytesIO()
-    Image.fromarray(array, mode="RGB").save(buffer, format="JPEG", quality=int(quality))
-    buffer.seek(0)
-    return load_image_tensor(buffer.getvalue())
+    options = {"quality": int(quality)}
+    if subsampling is not None:
+        if subsampling not in SUBSAMPLING:
+            raise ValueError(f"subsampling は {list(SUBSAMPLING)} のどれか: {subsampling!r}")
+        options["subsampling"] = SUBSAMPLING[subsampling]
+    Image.fromarray(array, mode="RGB").save(buffer, format="JPEG", **options)
+    return buffer.getvalue()
+
+
+def jpeg_compress(image: torch.Tensor, quality: int, subsampling: str | None = None) -> torch.Tensor:
+    """JPEG再エンコードを通した画像を返す（学習時のベナイン摂動／ロバスト性評価に使う）。"""
+    return load_image_tensor(jpeg_bytes(image, quality, subsampling))
 
 
 class RandomJpeg:
@@ -50,17 +67,38 @@ class RandomJpeg:
     DataLoader のワーカーに渡すため、関数ではなく pickle できるクラスにしている。
     """
 
-    def __init__(self, quality_min: int, quality_max: int) -> None:
+    def __init__(
+        self,
+        quality_min: int,
+        quality_max: int,
+        subsampling_weights: dict[str, float] | None = None,
+    ) -> None:
         if not 1 <= quality_min <= quality_max <= 100:
             raise ValueError(f"JPEG の品質は 1 <= min <= max <= 100: {quality_min}, {quality_max}")
         self.quality_min = int(quality_min)
         self.quality_max = int(quality_max)
+        # 色の間引き方をこの割合で毎回選ぶ（実験サ：本物は約8割が 4:4:4、案ク）。None は PIL の初期設定（4:2:0）
+        self.subsampling_weights = None
+        if subsampling_weights:
+            unknown = set(subsampling_weights) - set(SUBSAMPLING)
+            if unknown:
+                raise ValueError(f"subsampling は {list(SUBSAMPLING)} のどれか: {sorted(unknown)}")
+            if any(w < 0 for w in subsampling_weights.values()) or sum(subsampling_weights.values()) <= 0:
+                raise ValueError(f"subsampling の割合は 0 以上で、合計が正: {subsampling_weights}")
+            self.subsampling_weights = {k: float(v) for k, v in subsampling_weights.items()}
 
     def pick_quality(self) -> int:
         return int(torch.randint(self.quality_min, self.quality_max + 1, (1,)).item())
 
+    def pick_subsampling(self) -> str | None:
+        if self.subsampling_weights is None:
+            return None
+        names = list(self.subsampling_weights)
+        weights = torch.tensor([self.subsampling_weights[n] for n in names])
+        return names[int(torch.multinomial(weights, 1).item())]
+
     def __call__(self, image: torch.Tensor) -> torch.Tensor:
-        return jpeg_compress(image, self.pick_quality())
+        return jpeg_compress(image, self.pick_quality(), self.pick_subsampling())
 
 
 class PatchSampler:

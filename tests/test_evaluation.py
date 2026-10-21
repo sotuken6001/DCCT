@@ -462,7 +462,7 @@ def test_ai_jpeg_compresses_only_ai_images_and_keeps_cross_generator_report(trai
     tmp_path, config, run_id, checkpoint = trained
     seen: list[int] = []
 
-    def recording_transform(quality):
+    def recording_transform(quality, subsampling=None):
         def transform(image):
             seen.append(quality)
             return image
@@ -495,6 +495,105 @@ def test_ai_jpeg_compresses_only_ai_images_and_keeps_cross_generator_report(trai
     assert after == before
 
 
+def test_zero_features_blanks_one_model_and_saves_under_its_own_name(trained):
+    """確認イ: 判定のときに qφ（または pθ）の出力だけを 0 にして、分類器がそれをどれだけ使っているかを測る。"""
+    tmp_path, config, run_id, checkpoint = trained
+    patches = torch.rand(2, 2, 3, 64, 64) * 255
+
+    data = config.as_dict()
+    data["inference"]["zero_features"] = "ai"
+    with Evaluator(Config(data), run_id, checkpoint) as evaluator:
+        predictor = evaluator.predictor
+        with torch.no_grad():
+            x_prime = predictor.preprocessor.prepare_input(patches.reshape(4, 3, 64, 64).to(predictor.device))
+            photo = predictor.photo_model.extract_feature(x_prime)
+            ai = predictor.ai_model.extract_feature(x_prime)
+            expected = predictor.classifier.predict_proba(torch.cat([photo, torch.zeros_like(ai)], 1))
+        got = evaluator.predictor.score_patches(patches)
+        evaluator.run_ai_jpeg([90])
+        types = {row["perturbation_type"] for row in evaluator.repo.conn.execute(
+            "SELECT DISTINCT perturbation_type FROM evaluation_results WHERE run_id = ?", (run_id,))}
+
+    torch.testing.assert_close(got, expected.reshape(2, 2).mean(dim=1))
+    assert types == {"ai_jpeg_zero_ai"}                      # ふつうの ai_jpeg の結果とは混ざらない
+
+    data["inference"]["zero_features"] = "both"
+    with pytest.raises(ValueError):
+        Evaluator(Config(data), run_id, checkpoint)
+
+
+def test_calibrate_threshold_can_compress_only_ai_images(trained, monkeypatch):
+    """正解率の出し直し: 線を「AI画像も JPEG にした val」で決めるとき、本物はそのままにする。"""
+    tmp_path, config, run_id, checkpoint = trained
+    seen: list[str] = []
+
+    def ai_only(image):
+        seen.append("ai")
+        return image
+
+    with Evaluator(config, run_id, checkpoint) as evaluator:
+        expected = sum(
+            row["label"] == "ai"
+            for generator in config.get("dataset.train_generators")
+            for row in evaluator._rows_for(generator, "val", limit=None)
+        )
+        before = evaluator.threshold
+        evaluator.calibrate_threshold(ai_transform=ai_only, apply=False)
+        after = evaluator.threshold
+
+    assert expected > 0
+    assert len(seen) == expected          # AI画像の枚数ぶんだけ通る（本物は通らない）
+    assert after == before                # apply=False なら self.threshold は変えない
+
+
+def test_ai_jpeg_can_recalibrate_threshold_per_quality(trained, monkeypatch):
+    """`evaluate.ai_jpeg.recalibrate_threshold: true` なら、品質ごとに AI画像も JPEG にした val で線を決め直す。
+
+    結果はふつうの ai_jpeg と混ざらないよう 'ai_jpeg_recal' として保存する。
+    """
+    tmp_path, config, run_id, checkpoint = trained
+    data = config.as_dict()
+    data["evaluate"]["ai_jpeg"] = {"recalibrate_threshold": True}
+
+    calls: list[object] = []
+    original = Evaluator.calibrate_threshold
+
+    def _spy(self, transform=None, apply=True, ai_transform=None):
+        calls.append(ai_transform)
+        return original(self, transform=transform, apply=apply, ai_transform=ai_transform)
+
+    monkeypatch.setattr(Evaluator, "calibrate_threshold", _spy)
+
+    with Evaluator(Config(data), run_id, checkpoint) as evaluator:
+        results = evaluator.run_ai_jpeg([90, 75])
+        thresholds = dict(evaluator.ai_jpeg_thresholds)
+        types = {row["perturbation_type"] for row in evaluator.repo.conn.execute(
+            "SELECT DISTINCT perturbation_type FROM evaluation_results WHERE run_id = ?", (run_id,))}
+
+    assert calls[0] is None                               # 最初の1回はふつうの val
+    assert len(calls) == 3 and all(c is not None for c in calls[1:])   # 品質ごとに1回ずつ
+    assert set(thresholds) == {90, 75}
+    assert types == {"ai_jpeg_recal"}
+    assert {r.perturbation_level for r in results} == {90.0, 75.0}
+
+
+def test_ai_jpeg_keeps_single_threshold_by_default(trained, monkeypatch):
+    tmp_path, config, run_id, checkpoint = trained
+    calls: list[object] = []
+    original = Evaluator.calibrate_threshold
+
+    def _spy(self, transform=None, apply=True, ai_transform=None):
+        calls.append(ai_transform)
+        return original(self, transform=transform, apply=apply, ai_transform=ai_transform)
+
+    monkeypatch.setattr(Evaluator, "calibrate_threshold", _spy)
+    with Evaluator(config, run_id, checkpoint) as evaluator:
+        evaluator.run_ai_jpeg([90])
+        assert evaluator.ai_jpeg_thresholds == {}
+
+    assert calls == [None]
+
+
 def test_cli_ai_jpeg_mode(trained, monkeypatch, capsys):
     from src.cli import main as cli_main
 
@@ -505,3 +604,116 @@ def test_cli_ai_jpeg_mode(trained, monkeypatch, capsys):
                      "--checkpoint", checkpoint, "--ai-jpeg-quality", "90"]) == 0
     out = capsys.readouterr().out
     assert "ai_jpeg" in out and "平均AUC" in out
+
+
+def test_ai_jpeg_subsampling_is_used_and_saved_under_its_own_name(trained, monkeypatch):
+    """確認ケ：AI画像の JPEG の色の間引き方を 4:4:4 にして測り直せる。結果はふつうの ai_jpeg と混ざらない。"""
+    import src.eval.evaluator as evaluator_module
+
+    tmp_path, config, run_id, checkpoint = trained
+    data = config.as_dict()
+    data.setdefault("evaluate", {}).setdefault("ai_jpeg", {}).update({"subsampling": "4:4:4", "recalibrate_threshold": True})
+    config = Config(data)
+    seen: list[tuple[int, str | None]] = []
+    original = evaluator_module.jpeg_transform
+
+    def recording_transform(quality, subsampling=None):
+        seen.append((quality, subsampling))
+        return original(quality, subsampling)
+
+    monkeypatch.setattr(evaluator_module, "jpeg_transform", recording_transform)
+    with Evaluator(config, run_id, checkpoint) as evaluator:
+        evaluator.run_ai_jpeg([96])
+        types = {
+            row["perturbation_type"]
+            for row in evaluator.repo.conn.execute(
+                "SELECT DISTINCT perturbation_type FROM evaluation_results WHERE run_id = ?", (run_id,)
+            )
+        }
+    assert seen and all(s == "4:4:4" for _, s in seen)
+    assert "ai_jpeg_recal_s444" in types
+
+
+def test_jpeg_compress_subsampling_option():
+    import io
+
+    from PIL import Image, JpegImagePlugin
+
+    from src.preprocess.patch_sampler import jpeg_bytes
+
+    image = torch.rand(3, 32, 32) * 255
+    for name, code in (("4:4:4", 0), ("4:2:0", 2), (None, 2)):
+        with Image.open(io.BytesIO(jpeg_bytes(image, 96, name))) as img:
+            assert JpegImagePlugin.get_sampling(img) == code
+    with pytest.raises(ValueError):
+        jpeg_bytes(image, 96, "4:1:1")
+
+
+# ------------------------------------------------- 確認セ：線の引き方を調べる
+
+
+def test_best_accuracy_is_upper_bound_over_thresholds():
+    from src.eval.metrics import best_accuracy, class_accuracies
+
+    scores = np.array([0.1, 0.2, 0.3, 0.6, 0.7, 0.4])
+    labels = np.array([0, 0, 0, 1, 1, 1])
+    assert best_accuracy(scores, labels) == pytest.approx(1.0)               # 0.3 と 0.4 の間に引けば全部正解
+    assert compute_metrics(scores, labels, 0.65)["accuracy"] == pytest.approx(4 / 6)
+
+    real, ai = class_accuracies(scores, labels, 0.65)
+    assert real == pytest.approx(1.0) and ai == pytest.approx(1 / 3)         # 線が高すぎて AI画像を取りこぼす
+
+
+def test_threshold_check_reports_per_class_and_best_accuracy_without_saving(trained):
+    from src.cli import main as cli_main
+
+    tmp_path, config, run_id, checkpoint = trained
+    with MetadataRepository(config.get("paths.db_path")) as repo:
+        before = repo.conn.execute("SELECT COUNT(*) FROM evaluation_results").fetchone()[0]
+
+    out = tmp_path / "threshold_check"
+    path = tmp_path / "cfg.yaml"
+    assert cli_main(["threshold-check", "--config", str(path), "--run-id", str(run_id),
+                     "--ai-jpeg-quality", "96", "--subsampling", "4:4:4", "--out", str(out)]) == 0
+
+    import csv
+
+    with open(out / "threshold_check.csv", encoding="utf-8") as f:
+        rows = {r["generator"]: r for r in csv.DictReader(f)}
+    assert set(rows) == {"SDv1.4", "BigGAN", "平均"}
+    for key in ("accuracy", "real_accuracy", "ai_accuracy", "best_accuracy", "auc", "threshold"):
+        assert rows["BigGAN"][key] != ""
+    assert float(rows["BigGAN"]["best_accuracy"]) >= float(rows["BigGAN"]["accuracy"]) - 1e-9
+    assert "4:4:4" in (out / "threshold_check.md").read_text(encoding="utf-8")
+
+    with MetadataRepository(config.get("paths.db_path")) as repo:
+        after = repo.conn.execute("SELECT COUNT(*) FROM evaluation_results").fetchone()[0]
+    assert after == before                                                    # DB には残さない
+
+
+def test_threshold_check_can_set_threshold_from_real_val_only(trained):
+    """確認ソ：線を本物の val の点数だけで決める（本物を AI と間違える割合を指定する）。"""
+    import csv
+
+    from src.cli import main as cli_main
+    from src.eval.threshold_check import real_val_threshold
+
+    tmp_path, config, run_id, checkpoint = trained
+    with Evaluator(config, run_id, checkpoint) as evaluator:
+        rows = [
+            row
+            for generator in config.get("dataset.train_generators")
+            for row in evaluator._rows_for(generator, "val", limit=None)
+            if row["label"] == "real"
+        ]
+        scores, _ = evaluator.predictor.score_rows(rows)
+        assert real_val_threshold(evaluator, 50.0) == pytest.approx(float(np.percentile(scores, 50.0)))
+
+    out = tmp_path / "threshold_check_fa"
+    assert cli_main(["threshold-check", "--config", str(tmp_path / "cfg.yaml"), "--run-id", str(run_id),
+                     "--real-false-alarm", "50", "--out", str(out)]) == 0
+    with open(out / "threshold_check.csv", encoding="utf-8") as f:
+        mean = {r["generator"]: r for r in csv.DictReader(f)}["平均"]
+    # CLI は評価器を作り直すので切り抜く位置が少し変わる。本物の点数の範囲に入っていればよい
+    assert scores.min() - 0.05 <= float(mean["threshold"]) <= scores.max() + 0.05
+    assert "本物の val" in (out / "threshold_check.md").read_text(encoding="utf-8")

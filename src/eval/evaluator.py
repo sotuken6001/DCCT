@@ -64,17 +64,19 @@ class JpegTransform:
     """指定QFでJPEG再エンコードする（Figure 6のJPEG圧縮）。"""
 
     quality: int
+    # 色の間引き方。None は PIL の初期設定（4:2:0）
+    subsampling: str | None = None
 
     def __call__(self, image: torch.Tensor) -> torch.Tensor:
-        return jpeg_compress(image, self.quality)
+        return jpeg_compress(image, self.quality, self.subsampling)
 
 
 def downsample_transform(ratio: float) -> ImageTransform:
     return DownsampleTransform(float(ratio))
 
 
-def jpeg_transform(quality: int) -> ImageTransform:
-    return JpegTransform(int(quality))
+def jpeg_transform(quality: int, subsampling: str | None = None) -> ImageTransform:
+    return JpegTransform(int(quality), subsampling)
 
 
 class Evaluator:
@@ -93,6 +95,8 @@ class Evaluator:
         self.predictor = DCCTPredictor(config, classifier_checkpoint, device)
         self.threshold = float(config.get("inference.threshold", 0.5))
         self.max_images = config.get("evaluate.max_images_per_generator", None)
+        # run_ai_jpeg で品質ごとに線を決め直したときの値（{品質: τ}）。決め直さないときは空
+        self.ai_jpeg_thresholds: dict[int, float] = {}
 
     def close(self) -> None:
         self.repo.close()
@@ -143,13 +147,17 @@ class Evaluator:
     # ------------------------------------------------------------------
 
     def calibrate_threshold(
-        self, transform: ImageTransform | None = None, apply: bool = True
+        self,
+        transform: ImageTransform | None = None,
+        apply: bool = True,
+        ai_transform: ImageTransform | None = None,
     ) -> float:
         """val split上でYouden指数を最大化する閾値τを決める（test splitには触れない）。
 
         `transform` を渡すと、その劣化処理を通した val で較正する。ロバスト性評価で
         条件ごとに較正し直すときに使う。`apply=False` なら `self.threshold` は
-        書き換えず、求めた値を返すだけにする。
+        書き換えず、求めた値を返すだけにする。`ai_transform` を渡すと、AI画像だけにそれを通す
+        （AI画像だけ JPEG にした評価に合わせて、線も同じ条件の val で決めるときに使う）。
         """
         if not self.config.get("evaluate.tune_threshold", True):
             return self.threshold
@@ -164,7 +172,7 @@ class Evaluator:
             logger.warning("val splitに画像がないため、閾値は既定値 %.3f のままにします", self.threshold)
             return self.threshold
 
-        scores, labels = self.predictor.score_rows(rows, transform=transform)
+        scores, labels = self._score_rows(rows, transform, ai_transform)
         threshold = tune_threshold(scores, labels, default=self.threshold)
         logger.info("閾値τを %.4f にチューニングしました（val %d枚）", threshold, len(labels))
         if apply:
@@ -189,18 +197,7 @@ class Evaluator:
             logger.warning("評価対象の画像がありません: %s（split=%s）", generator, split)
             return None
 
-        if ai_transform is None:
-            scores, labels = self.predictor.score_rows(rows, transform=transform)
-        else:
-            parts = []
-            ai_rows = [row for row in rows if row["label"] == "ai"]
-            real_rows = [row for row in rows if row["label"] != "ai"]
-            if ai_rows:
-                parts.append(self.predictor.score_rows(ai_rows, transform=ai_transform))
-            if real_rows:
-                parts.append(self.predictor.score_rows(real_rows, transform=transform))
-            scores = np.concatenate([part[0] for part in parts])
-            labels = np.concatenate([part[1] for part in parts])
+        scores, labels = self._score_rows(rows, transform, ai_transform)
         metrics = compute_metrics(scores, labels, self.threshold if threshold is None else threshold)
         logger.info(
             "%s: acc=%.4f auc=%s ap=%s (n=%d)",
@@ -211,6 +208,24 @@ class Evaluator:
             metrics["num_samples"],
         )
         return GeneratorResult(generator=generator, metrics=metrics)
+
+    def _score_rows(
+        self,
+        rows: list[dict[str, Any]],
+        transform: ImageTransform | None,
+        ai_transform: ImageTransform | None,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """`ai_transform` があれば AI画像だけにそれを通し、本物には `transform` だけを通す。"""
+        if ai_transform is None:
+            return self.predictor.score_rows(rows, transform=transform)
+        parts = []
+        ai_rows = [row for row in rows if row["label"] == "ai"]
+        real_rows = [row for row in rows if row["label"] != "ai"]
+        if ai_rows:
+            parts.append(self.predictor.score_rows(ai_rows, transform=ai_transform))
+        if real_rows:
+            parts.append(self.predictor.score_rows(real_rows, transform=transform))
+        return np.concatenate([part[0] for part in parts]), np.concatenate([part[1] for part in parts])
 
     def _save(self, result: GeneratorResult, eval_type: str, split: str) -> None:
         generator_id = self.repo.generator_id_by_name(
@@ -255,18 +270,50 @@ class Evaluator:
         """AI画像だけを JPEG にしてから判定する（本物はそのまま）。
 
         GenImage の本物は JPEG、AI画像は PNG なので、形式の差で見分けていないかを確かめる。
-        閾値は圧縮しない val で決めるので、正解率は参考にならない。AUC を見る。
+        既定では線（閾値）を圧縮しない val で決めるので、正解率は参考にならない。AUC を見る。
+        `evaluate.ai_jpeg.recalibrate_threshold: true` にすると、品質ごとに「AI画像も同じ品質の
+        JPEG にした val」で線を決め直すので、論文と並べられる正解率になる。
         cross_generator の表を書きかえないよう、robustness（perturbation_type='ai_jpeg'）として保存する。
         """
         self.calibrate_threshold()
 
+        recalibrate = bool(self.config.get("evaluate.ai_jpeg.recalibrate_threshold", False))
+        # 確認ケ：AI画像の JPEG の色の間引き方を指定する（None は PIL の初期設定 4:2:0）
+        subsampling = self.config.get("evaluate.ai_jpeg.subsampling", None)
+        if subsampling is not None:
+            logger.info("AI画像の JPEG の色の間引き方を %s にします", subsampling)
+        self.ai_jpeg_thresholds = {}
+        if recalibrate:
+            for quality in qualities:
+                logger.info("AI画像も JPEG 品質 %d にした val で閾値を決め直します", int(quality))
+                self.ai_jpeg_thresholds[int(quality)] = self.calibrate_threshold(
+                    apply=False, ai_transform=jpeg_transform(int(quality), subsampling)
+                )
+
+        perturbation_type = "ai_jpeg"
+        zero = self.predictor.zero_features
+        if zero is not None:
+            # 片方の出力を 0 にした測り直し（確認イ）は、ふつうの結果と混ざらないよう別の名前で残す
+            perturbation_type += f"_zero_{zero}"
+        if recalibrate:
+            # 線を決め直した結果も、正解率だけが変わるので別の名前で残す
+            perturbation_type += "_recal"
+        if subsampling is not None:
+            # 色の間引き方を変えた結果も別の名前で残す（例: ai_jpeg_recal_s444）
+            perturbation_type += "_s" + subsampling.replace(":", "")
+
         results: list[GeneratorResult] = []
         for generator in self.target_generators():
             for quality in qualities:
-                result = self.evaluate_generator(generator, split, ai_transform=jpeg_transform(int(quality)))
+                result = self.evaluate_generator(
+                    generator,
+                    split,
+                    ai_transform=jpeg_transform(int(quality), subsampling),
+                    threshold=self.ai_jpeg_thresholds.get(int(quality)),
+                )
                 if result is None:
                     continue
-                result.perturbation_type = "ai_jpeg"
+                result.perturbation_type = perturbation_type
                 result.perturbation_level = float(quality)
                 self._save(result, "robustness", split)
                 results.append(result)

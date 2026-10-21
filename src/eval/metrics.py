@@ -44,3 +44,26 @@ def tune_threshold(scores: np.ndarray, labels: np.ndarray, default: float = 0.5)
     if lower.size:
         return float((candidate + lower.max()) / 2.0)
     return float(np.nextafter(candidate, -np.inf))
+
+
+def best_accuracy(scores: np.ndarray, labels: np.ndarray) -> float | None:
+    """線（閾値）をいちばん良い位置に引いたときの正解率（確認セ：上限の目安）。
+
+    評価する画像そのものを見て線を選ぶので、実際の判定には使えない。
+    「見分ける力はあるのに、線の位置がずれているだけか」を確かめるための値。
+    """
+    if len(np.unique(labels)) < 2:
+        return None
+    positives = float((labels == 1).sum())
+    negatives = float((labels == 0).sum())
+    false_positive_rate, true_positive_rate, _ = roc_curve(labels, scores)
+    accuracy = (true_positive_rate * positives + (1.0 - false_positive_rate) * negatives) / (positives + negatives)
+    return float(accuracy.max())
+
+
+def class_accuracies(scores: np.ndarray, labels: np.ndarray, threshold: float) -> tuple[float | None, float | None]:
+    """（本物の正解率, AI画像の正解率）。本物は線以下、AI画像は線より上で正解。"""
+    real, ai = labels == 0, labels == 1
+    real_accuracy = float((scores[real] <= threshold).mean()) if real.any() else None
+    ai_accuracy = float((scores[ai] > threshold).mean()) if ai.any() else None
+    return real_accuracy, ai_accuracy

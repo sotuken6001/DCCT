@@ -1,0 +1,17 @@
+# Stage II: 確認オ（run51、pθ だけ）を、AI画像の JPEG の色の間引き方を本物と同じ割合で混ぜて学習し直す（実験サ1）
+# 案クで、本物（ImageNet）は約8割が 4:4:4・約2割が 4:2:0 なのに、AI画像にかけていた PIL の JPEG は全部 4:2:0 だった。
+# 確認ケで、どのモデルもこの差を手がかりの一部にしていた（AI画像を 4:4:4 にすると AUC −.025〜−.047）。
+# 色の間引き方まで本物にそろえて学習したときの成績を見る。確認オから変えるのは augmentation.ai_jpeg.subsampling だけ。
+extends: stage2_classifier_aijpeg_q96_photo_only.yaml
+
+experiment:
+  name: stage2_classifier_sdv14_aijpeg_q96_mix_photo_only
+
+augmentation:
+  ai_jpeg:
+    subsampling:
+      "4:4:4": 0.8
+      "4:2:0": 0.2
+
+train:
+  checkpoint_dir: checkpoints/stage2_classifier_aijpeg_q96_mix_photo_only

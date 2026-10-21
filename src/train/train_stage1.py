@@ -51,10 +51,17 @@ class TrainerStage1(Trainer):
         val_rows = select_image_rows(config, self.repo, label=self.label, split="val", limit=limit)
 
         logger.info("学習対象 %s: train=%d枚 val=%d枚", self.label, len(train_rows), len(val_rows))
-        self.train_loader = self.make_loader(PatchDataset(train_rows, sampler), shuffle=True)
+        # AI画像だけ JPEG にする（実験19：qφ も本物と形式をそろえて学習する）。pθ は本物だけなので何もしない
+        ai_transform = builders.build_ai_train_transform(config)
+        if ai_transform is not None and self.label == "ai":
+            logger.info(
+                "AI画像だけ JPEG（品質 %d〜%d、色の間引き方 %s）にして学習します",
+                ai_transform.quality_min, ai_transform.quality_max, ai_transform.subsampling_weights or "PIL の初期設定（4:2:0）",
+            )
+        self.train_loader = self.make_loader(PatchDataset(train_rows, sampler, ai_transform=ai_transform), shuffle=True)
         # 先頭Nバッチだけを検証に使うため、ラベルが偏らないよう決定的にシャッフルする
         self.val_loader = self.make_loader(
-            PatchDataset(self.prepare_eval_rows(val_rows), sampler), shuffle=False
+            PatchDataset(self.prepare_eval_rows(val_rows), sampler, ai_transform=ai_transform), shuffle=False
         )
 
     def trainable_modules(self) -> dict[str, torch.nn.Module]:

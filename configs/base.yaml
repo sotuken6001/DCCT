@@ -60,7 +60,9 @@ dataset:
     - { name: Wukong, path: "genimage-wukong.zip",                category: diffusion, type: auto }
     - { name: GLIDE,  path: "imagenet_glide",                     category: diffusion, type: auto }
     - { name: VQDM,   path: "VQDM",                               category: diffusion, type: auto }
-    - { name: BigGAN, path: "BigGAN",                             category: gan,       type: auto }
+    # 10/17: 外付けSSDの整理で BigGAN/imagenet_ai_0419_biggan が一番上に移されたので、場所を合わせた
+    #（DB の images.filepath も同じく書き換え済み。もとは path: "BigGAN"）
+    - { name: BigGAN, path: "imagenet_ai_0419_biggan",            category: gan,       type: auto }
     # 【OI-1】取得しない方針。generatorsマスタには残すが走査・評価の対象外
     #（後日入手した場合は path を設定し、excluded_generators から外すだけでよい）
     - { name: Midjourney, path: "",                               category: diffusion, type: auto }
@@ -115,6 +117,12 @@ augmentation:
   # 学習で AI画像だけを JPEG にする（品質は min〜max からランダム）。GenImage は本物が JPEG、
   # AI画像が PNG なので、形式の差で見分けないようにする（実験15、Stage II だけで使う）
   ai_jpeg:
+    enabled: false
+    quality_min: 70
+    quality_max: 95
+  # 学習で本物だけを PIL の JPEG にかけ直す（実験17、Stage II だけで使う）。ai_jpeg と合わせて使うと、
+  # 本物も AI画像も「最後に同じ PIL の JPEG を通った画像」になり、確認7 の評価と同じ条件で学習できる
+  real_jpeg:
     enabled: false
     quality_min: 70
     quality_max: 95
@@ -176,6 +184,7 @@ data:
 inference:
   num_patches: 16           # P
   threshold: 0.5            # τ の初期値。val上でYouden指数最大化によりチューニングする
+  zero_features: null       # 確認イ: photo / ai を指定すると、判定のときにそのモデルの出力を 0 にする
 
 evaluate:
   # 評価に使う分類器チェックポイント（--run-id を指定した場合はDBから自動解決される）
@@ -194,6 +203,12 @@ evaluate:
     # 既定のfalseでは、劣化でスコア分布がずれた条件は全件が閾値の片側に寄り、
     # 識別力が残っていてもAccuracyが0.5まで落ちる（AUCと併せて読むこと）。
     # trueにすると8条件ぶん較正が走るので、評価時間が1時間ほど延びる。
+    recalibrate_threshold: false
+  ai_jpeg:
+    # `dcct evaluate --mode ai_jpeg`（AI画像だけ JPEG にして判定）の線（閾値）の決め方。
+    #   false（既定）: 圧縮しない val で決める。正解率は参考にならない（AUC を見る）
+    #   true:          品質ごとに、AI画像も同じ品質の JPEG にした val で決め直す。論文と並べられる正解率になる。
+    #                  結果は perturbation_type='ai_jpeg_recal' として保存し、ふつうの ai_jpeg とは混ざらない
     recalibrate_threshold: false
   one_class:
     # 一クラス検出（DCCT†、`dcct evaluate-one-class`）の閾値を決めるのに使う学習用の写真の枚数。

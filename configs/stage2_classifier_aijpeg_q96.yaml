@@ -1,0 +1,18 @@
+# Stage II: A（run42、stage2_classifier_aijpeg.yaml）の AI画像の JPEG を、品質 96 だけにして学習する（実験18、案 f）
+# 「Fake or JPEG?」(Grommelt ほか 2024) によると、GenImage の本物（ImageNet）の JPEG は多くが品質 96。
+# A は AI画像を品質 70〜95 にしていたので、本物とは品質がずれていた。品質を本物にそろえても見分けられるかを見る。
+# A から変えるのは augmentation.ai_jpeg の品質だけ（本物はそのまま、pθ・qφ・種もそのまま）。
+extends: stage2_classifier_aijpeg.yaml
+
+experiment:
+  name: stage2_classifier_sdv14_aijpeg_q96
+
+augmentation:
+  ai_jpeg:
+    enabled: true
+    quality_min: 96
+    quality_max: 96
+
+train:
+  checkpoint_dir: checkpoints/stage2_classifier_aijpeg_q96
+  keep_last_checkpoints: 1

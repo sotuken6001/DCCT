@@ -50,6 +50,10 @@ class DCCTPredictor:
 
         self.photo_model = self._load_model("photo", modules) if self.use_photo_model else None
         self.ai_model = self._load_model("ai", modules) if self.use_ai_model else None
+        # 確認イ: 判定のときに片方のモデルの出力を 0 にして、分類器がそれをどれだけ使っているかを見る
+        self.zero_features = config.get("inference.zero_features", None)
+        if self.zero_features not in (None, "photo", "ai"):
+            raise ValueError(f"inference.zero_features は null / photo / ai のどれか: {self.zero_features!r}")
 
         reference = self.photo_model or self.ai_model
         in_channels = builders.classifier_input_channels(config, reference)
@@ -89,10 +93,11 @@ class DCCTPredictor:
 
         x_prime = self.preprocessor.prepare_input(flat)
         features = []
-        if self.photo_model is not None:
-            features.append(self.photo_model.extract_feature(x_prime))
-        if self.ai_model is not None:
-            features.append(self.ai_model.extract_feature(x_prime))
+        for which, model in (("photo", self.photo_model), ("ai", self.ai_model)):
+            if model is None:
+                continue
+            feature = model.extract_feature(x_prime)
+            features.append(torch.zeros_like(feature) if which == self.zero_features else feature)
 
         scores = self.classifier.predict_proba(torch.cat(features, dim=1))
         return scores.reshape(batch, num_patches).mean(dim=1)

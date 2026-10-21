@@ -116,6 +116,38 @@ def test_patch_dataset_returns_patch_and_label(project):
     assert labels == {0.0, 1.0}                   # 写真とAI画像の両方が含まれる
 
 
+def test_patch_dataset_passes_each_label_through_its_own_transform(project):
+    """実験17: AI画像は ai_transform、本物は real_transform だけを通す（本物も PIL の JPEG にかけ直す）。"""
+    tmp_path, data = project
+    config = Config.load(tmp_path / "test_base.yaml")
+    sampler = builders.build_patch_sampler(config)
+    with MetadataRepository(config.get("paths.db_path")) as repo:
+        rows = select_image_rows(config, repo, label=None, split="train")
+
+    seen: list[str] = []
+
+    def mark(name):
+        def transform(image):
+            seen.append(name)
+            return image
+        return transform
+
+    dataset = PatchDataset(rows, sampler, ai_transform=mark("ai"), real_transform=mark("real"))
+    for i in range(len(dataset)):
+        dataset[i]
+
+    assert seen.count("ai") == sum(row["label"] == "ai" for row in rows)
+    assert seen.count("real") == sum(row["label"] != "ai" for row in rows)
+
+
+def test_real_train_transform_follows_config():
+    data = Config.load("configs/base.yaml").as_dict()
+    assert builders.build_real_train_transform(Config(data)) is None          # 既定は何もしない
+    data["augmentation"]["real_jpeg"] = {"enabled": True, "quality_min": 70, "quality_max": 95}
+    transform = builders.build_real_train_transform(Config(data))
+    assert (transform.quality_min, transform.quality_max) == (70, 95)
+
+
 def test_patch_dataset_rejects_empty_rows():
     with pytest.raises(ValueError, match="0件"):
         PatchDataset([], builders.build_patch_sampler(Config.load("configs/base.yaml")))
@@ -563,3 +595,62 @@ def test_stage2_uses_ai_jpeg_for_train_and_val(project, monkeypatch):
         for loader in (trainer.train_loader, trainer.val_loader):
             assert loader.dataset.ai_transform is not None
         trainer.fit(num_epochs=1, max_steps_per_epoch=1)
+
+
+def test_stage1_ai_uses_ai_jpeg_for_train_and_val(project):
+    """qφ の学習でも AI画像だけ JPEG にできる（実験19：形式をそろえて qφ を学習し直す）。"""
+    tmp_path, data = project
+    config = _write_config(
+        tmp_path, data, "s1a_aijpeg.yaml",
+        train={**data["train"], "checkpoint_dir": str(tmp_path / "ckpt_s1a_aijpeg")},
+        augmentation={**data["augmentation"], "ai_jpeg": {"enabled": True, "quality_min": 70, "quality_max": 95}},
+    )
+    with TrainerStage1(config, "ai") as trainer:
+        for loader in (trainer.train_loader, trainer.val_loader):
+            assert loader.dataset.ai_transform is not None
+        trainer.fit(num_epochs=1, max_steps_per_epoch=1)
+
+
+def test_stage1_without_ai_jpeg_keeps_images_as_is(project):
+    tmp_path, data = project
+    config = _write_config(tmp_path, data, "s1a_plain.yaml",
+                           train={**data["train"], "checkpoint_dir": str(tmp_path / "ckpt_s1a_plain")})
+    with TrainerStage1(config, "ai") as trainer:
+        assert trainer.train_loader.dataset.ai_transform is None
+        assert trainer.val_loader.dataset.ai_transform is None
+
+
+def test_random_jpeg_mixes_subsampling_by_weights():
+    """実験サ：AI画像の JPEG の色の間引き方を、本物と同じ割合で混ぜる。"""
+    from src.preprocess.patch_sampler import RandomJpeg
+
+    torch.manual_seed(0)
+    transform = RandomJpeg(96, 96, subsampling_weights={"4:4:4": 0.8, "4:2:0": 0.2})
+    picks = [transform.pick_subsampling() for _ in range(2000)]
+    assert set(picks) == {"4:4:4", "4:2:0"}
+    assert 0.75 < picks.count("4:4:4") / len(picks) < 0.85
+
+    assert RandomJpeg(96, 96).pick_subsampling() is None                   # 指定がなければ PIL の初期設定
+    with pytest.raises(ValueError):
+        RandomJpeg(96, 96, subsampling_weights={"4:1:1": 1.0})
+    with pytest.raises(ValueError):
+        RandomJpeg(96, 96, subsampling_weights={"4:4:4": 0.0})
+
+
+def test_random_jpeg_applies_picked_subsampling(monkeypatch):
+    import src.preprocess.patch_sampler as module
+
+    seen = []
+    monkeypatch.setattr(module, "jpeg_compress", lambda image, q, s=None: seen.append((q, s)) or image)
+    transform = module.RandomJpeg(96, 96, subsampling_weights={"4:4:4": 1.0})
+    transform(torch.zeros(3, 8, 8))
+    assert seen == [(96, "4:4:4")]
+
+
+def test_ai_train_transform_reads_subsampling_weights():
+    data = Config.load("configs/base.yaml").as_dict()
+    data["augmentation"]["ai_jpeg"] = {
+        "enabled": True, "quality_min": 96, "quality_max": 96, "subsampling": {"4:4:4": 0.8, "4:2:0": 0.2},
+    }
+    transform = builders.build_ai_train_transform(Config(data))
+    assert transform.subsampling_weights == {"4:4:4": 0.8, "4:2:0": 0.2}

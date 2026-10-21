@@ -82,6 +82,7 @@ class PatchDataset(Dataset):
         rows: Sequence[dict[str, Any]],
         sampler: PatchSampler,
         ai_transform: Callable[[torch.Tensor], torch.Tensor] | None = None,
+        real_transform: Callable[[torch.Tensor], torch.Tensor] | None = None,
     ) -> None:
         if not rows:
             raise ValueError(
@@ -92,14 +93,17 @@ class PatchDataset(Dataset):
         self.sampler = sampler
         # AI画像だけに通す処理（実験15：AI画像も JPEG にして本物と形式をそろえる）。パッチを切る前に通す
         self.ai_transform = ai_transform
+        # 本物だけに通す処理（実験17：本物も PIL の JPEG にかけ直して、AI画像と同じ作りの JPEG にそろえる）
+        self.real_transform = real_transform
 
     def __len__(self) -> int:
         return len(self.rows)
 
     def _load(self, index: int) -> torch.Tensor:
         image = load_image_tensor(open_image_bytes_cached(self.rows[index]["filepath"]))
-        if self.ai_transform is not None and self.rows[index]["label"] == "ai":
-            image = self.ai_transform(image)
+        transform = self.ai_transform if self.rows[index]["label"] == "ai" else self.real_transform
+        if transform is not None:
+            image = transform(image)
         return image
 
     def __getitem__(self, index: int) -> tuple[torch.Tensor, torch.Tensor]:

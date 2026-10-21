@@ -1,0 +1,14 @@
+# Stage II: 実験18（stage2_classifier_aijpeg_q96.yaml）から qφ を外し、pθ だけで分類器を学習する（確認オ）
+# 実験16 は品質 70〜95 の条件で qφ を外した（.929 → .928）。実験18・19 と並べるため、品質 96 でも測り直す。
+# 確認エ（qφ だけ）・実験19（両方）と比べて、pθ と qφ の情報がどれだけ重なっているかを見る。
+extends: stage2_classifier_aijpeg_q96.yaml
+
+experiment:
+  name: stage2_classifier_sdv14_aijpeg_q96_photo_only
+
+stage2:
+  use_ai_model: false
+
+train:
+  checkpoint_dir: checkpoints/stage2_classifier_aijpeg_q96_photo_only
+  keep_last_checkpoints: 1

@@ -61,11 +61,23 @@ class TrainerStage2(Trainer):
         # 実験15：AI画像も JPEG にして本物と形式をそろえる（best.pt を選ぶ val も同じ条件にする）
         ai_transform = builders.build_ai_train_transform(config)
         if ai_transform is not None:
-            logger.info("AI画像だけ JPEG（品質 %d〜%d）にして学習します", ai_transform.quality_min, ai_transform.quality_max)
-        self.train_loader = self.make_loader(PatchDataset(train_rows, sampler, ai_transform=ai_transform), shuffle=True)
+            logger.info(
+                "AI画像だけ JPEG（品質 %d〜%d、色の間引き方 %s）にして学習します",
+                ai_transform.quality_min, ai_transform.quality_max, ai_transform.subsampling_weights or "PIL の初期設定（4:2:0）",
+            )
+        # 実験17：本物も PIL の JPEG にかけ直す（元の ImageNet の JPEG との作りの違いを使えなくする）
+        real_transform = builders.build_real_train_transform(config)
+        if real_transform is not None:
+            logger.info("本物も JPEG（品質 %d〜%d）にかけ直して学習します", real_transform.quality_min, real_transform.quality_max)
+        self.train_loader = self.make_loader(
+            PatchDataset(train_rows, sampler, ai_transform=ai_transform, real_transform=real_transform), shuffle=True
+        )
         # 先頭Nバッチだけを検証に使うため、ラベルが偏らないよう決定的にシャッフルする
         self.val_loader = self.make_loader(
-            PatchDataset(self.prepare_eval_rows(val_rows), sampler, ai_transform=ai_transform), shuffle=False
+            PatchDataset(
+                self.prepare_eval_rows(val_rows), sampler, ai_transform=ai_transform, real_transform=real_transform
+            ),
+            shuffle=False,
         )
 
     def _load_conditional_model(self, which: str):

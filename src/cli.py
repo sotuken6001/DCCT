@@ -10,6 +10,10 @@
     python -m src.cli train-stage2  --config configs/stage2_classifier.yaml
     python -m src.cli evaluate      --mode cross_generator --run-id <ID>
     python -m src.cli evaluate-one-class --config configs/stage2_classifier.yaml
+    python -m src.cli jpeg-stats    --config configs/base.yaml
+    python -m src.cli subsampling-scores --config configs/stage2_classifier_aijpeg_q96.yaml
+    python -m src.cli threshold-check --config configs/stage2_classifier_aijpeg_q96_mix_photo_only.yaml --run-id 52 --ai-jpeg-quality 96 --subsampling 4:4:4
+    python -m src.cli compare-models --config configs/stage2_classifier_aijpeg_q96_qjpeg.yaml --ai-jpeg-quality 96
     python -m src.cli report        --run-id <ID>
     python -m src.cli export-bundle --config configs/stage2_classifier_aijpeg.yaml --run-id <ID> --out weights/dcct_A.pt
     python -m src.cli predict       --bundle weights/dcct_A.pt photo.jpg
@@ -105,6 +109,58 @@ def build_parser() -> argparse.ArgumentParser:
         help="AI画像だけをこの品質の JPEG にしてから評価する（本物は JPEG・AI画像は PNG という形式の差を消す確認用）",
     )
     p_one.add_argument("--out", help="出力先（既定: <report_root>/one_class_<pθの保存フォルダ名>）")
+
+    p_cmp = sub.add_parser(
+        "compare-models",
+        help="pθ と qφ の出力の似かた（特徴の CKA・点数の順位相関・差の点数の AUC）を生成器ごとに測る（案ウ）",
+    )
+    p_cmp.add_argument("--config", default="configs/stage2_classifier.yaml")
+    p_cmp.add_argument("--photo-checkpoint", help="使う pθ（省略時は config の stage2.photo_model_checkpoint）")
+    p_cmp.add_argument(
+        "--ai-checkpoint",
+        help="使う qφ（省略時は config の stage2.ai_model_checkpoint）。random で学習していないモデル（案カ：CKA の基準）",
+    )
+    p_cmp.add_argument("--split", default="test", choices=["train", "val", "test"])
+    p_cmp.add_argument("--ai-jpeg-quality", type=int, help="AI画像だけをこの品質の JPEG にしてから測る")
+    p_cmp.add_argument("--max-images", type=int, default=1000, help="生成器ごと・ラベルごとの枚数の上限（既定 1000）")
+    p_cmp.add_argument("--out", help="出力先（既定: <report_root>/compare_<pθの保存フォルダ名>_<qφの保存フォルダ名>）")
+
+    p_js = sub.add_parser(
+        "jpeg-stats",
+        help="本物の JPEG の作り（色の間引き方・推定品質）を数え、AI画像にかけている PIL の JPEG と比べる（案ク）",
+    )
+    p_js.add_argument("--config", default="configs/base.yaml")
+    p_js.add_argument("--max-images", type=int, default=1000, help="まとまりごとに調べる枚数の上限（既定 1000）")
+    p_js.add_argument("--pil-quality", type=int, default=96, help="比べる PIL の JPEG の品質（既定 96）")
+    p_js.add_argument("--out", help="出力先（既定: <report_root>/jpeg_stats）")
+
+    p_ss = sub.add_parser(
+        "subsampling-scores",
+        help="色の間引き方（4:4:4 / 4:2:0）ごとに pθ / qφ の予測しにくさの点数を比べる（確認コ）",
+    )
+    p_ss.add_argument("--config", default="configs/stage2_classifier.yaml")
+    p_ss.add_argument("--checkpoint", help="使う条件付きモデル（省略時は config の stage2.photo_model_checkpoint）")
+    p_ss.add_argument("--split", default="test", choices=["train", "val", "test"])
+    p_ss.add_argument("--max-images", type=int, default=1000, help="まとまりごとの枚数の上限（既定 1000）")
+    p_ss.add_argument("--ai-jpeg-quality", type=int, default=96, help="AI画像にかける JPEG の品質（既定 96）")
+    p_ss.add_argument("--out", help="出力先（既定: <report_root>/subsampling_<モデルの保存フォルダ名>）")
+
+    p_tc = sub.add_parser(
+        "threshold-check",
+        help="生成器ごとに本物・AI画像それぞれの正解率と、線をいちばん良く引いたときの正解率を出す（確認セ、DB に残さない）",
+    )
+    p_tc.add_argument("--config", default="configs/stage2_classifier.yaml")
+    p_tc.add_argument("--run-id", type=int, help="評価対象のStage II実行ID（省略時は最新の完了実行）")
+    p_tc.add_argument("--experiment-id", type=int, help="実験IDから実行IDを解決する")
+    p_tc.add_argument("--checkpoint", help="分類器チェックポイントを明示的に指定する")
+    p_tc.add_argument("--split", default="test", choices=["train", "val", "test"])
+    p_tc.add_argument("--ai-jpeg-quality", type=int, help="AI画像だけをこの品質の JPEG にする（省略時は AI画像は元のまま）")
+    p_tc.add_argument("--subsampling", choices=["4:4:4", "4:2:2", "4:2:0"], help="その JPEG の色の間引き方（省略時は PIL の初期設定 4:2:0）")
+    p_tc.add_argument(
+        "--real-false-alarm", type=float,
+        help="線を本物の val だけで決め、本物を AI と間違える割合をこの値（%%）にする（確認ソ。例 5）",
+    )
+    p_tc.add_argument("--out", help="出力先（既定: <report_root>/threshold_check_run<ID>_<条件>）")
 
     p_report = sub.add_parser("report", help="結果レポートを出力する")
     p_report.add_argument("--config", default="configs/base.yaml")
@@ -373,9 +429,12 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
         else:
             results = evaluator.run_robustness(split=args.split)
         threshold = evaluator.threshold
+        ai_jpeg_thresholds = dict(evaluator.ai_jpeg_thresholds)
 
     print()
     print(f"run_id={run_id} 閾値τ={threshold:.4f}")
+    for quality, value in sorted(ai_jpeg_thresholds.items(), reverse=True):
+        print(f"  AI画像も JPEG 品質 {quality} にした val で決め直した閾値τ={value:.4f}")
     print(f"{'生成器':<14}{'劣化':>12}{'強度':>8}{'Accuracy':>10}{'AUC':>10}{'AP':>10}{'枚数':>8}")
     for result in results:
         metrics = result.metrics
@@ -393,9 +452,144 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
             aucs = [r.metrics["auc"] for r in results if r.perturbation_level == level and r.metrics["auc"] is not None]
             if aucs:
                 print(f"\n平均AUC（AI画像だけ JPEG 品質 {level:g}）: {sum(aucs) / len(aucs):.4f}")
+            if int(level) in ai_jpeg_thresholds:
+                # 線を同じ条件の val で決め直したときだけ、正解率にも意味がある
+                accs = [r.metrics["accuracy"] for r in results if r.perturbation_level == level]
+                print(f"平均Accuracy（同じ条件で閾値を決め直し）: {sum(accs) / len(accs):.4f}")
     elif results:
         mean_accuracy = sum(r.metrics["accuracy"] for r in results) / len(results)
         print(f"\n平均Accuracy: {mean_accuracy:.4f}")
+    return 0
+
+
+def cmd_jpeg_stats(args: argparse.Namespace) -> int:
+    from .eval.jpeg_stats import JpegStats, write_report
+
+    config = Config.load(args.config)
+    with JpegStats(config, max_images=args.max_images, pil_quality=args.pil_quality) as stats:
+        results = stats.run()
+    out_dir = args.out or Path(config.get("paths.report_root", "reports")) / "jpeg_stats"
+    path = write_report(results, out_dir)
+
+    def fmt(value) -> str:
+        return "N/A" if value is None else f"{value:.3f}"
+
+    print()
+    print(f"{'まとまり':<34}{'枚数':>6}{'JPEG':>7}{'4:4:4':>7}{'4:2:2':>7}{'4:2:0':>7}{'白黒':>7}{'品質96':>8}{'標準表':>8}{'中央値':>7}  よく出る品質")
+    for row in results:
+        median = "N/A" if row["median_quality"] is None else f"{row['median_quality']:.0f}"
+        print(
+            f"{row['group']:<34}{row['num_images']:>6}{fmt(row['jpeg_share']):>7}{fmt(row['share_444']):>7}"
+            f"{fmt(row['share_422']):>7}{fmt(row['share_420']):>7}{fmt(row['share_gray']):>7}{fmt(row['share_q96']):>8}"
+            f"{fmt(row['share_standard']):>8}{median:>7}  {row['top_qualities']}"
+        )
+    print(f"\nレポートを出力しました: {path}")
+    return 0
+
+
+def cmd_subsampling_scores(args: argparse.Namespace) -> int:
+    from .eval.subsampling_scores import SubsamplingScores, write_report
+
+    config = Config.load(args.config)
+    with SubsamplingScores(
+        config, args.checkpoint, max_images=args.max_images, ai_jpeg_quality=args.ai_jpeg_quality, split=args.split
+    ) as scores:
+        result = scores.run()
+        checkpoint = scores.checkpoint
+    out_dir = args.out or Path(config.get("paths.report_root", "reports")) / f"subsampling_{Path(checkpoint).parent.name}"
+    path = write_report(result, out_dir, checkpoint, args.ai_jpeg_quality)
+
+    print()
+    print(f"モデル={checkpoint}")
+    print(f"{'まとまり':<22}{'枚数':>6}{'平均':>10}{'中央値':>10}")
+    for g in result["groups"]:
+        print(f"{g['group']:<22}{g['num_images']:>6}{g['mean']:>10.4f}{g['median']:>10.4f}")
+    print("AUC（後ろを当てる向き。0.5 より下なら後ろのほうが予測しやすい）")
+    for p in result["pairs"]:
+        auc = "N/A" if p["auc"] is None else f"{p['auc']:.4f}"
+        print(f"  {p['first']} → {p['second']}: {auc}")
+    print(f"\nレポートを出力しました: {path}")
+    return 0
+
+
+def cmd_threshold_check(args: argparse.Namespace) -> int:
+    from .data.repository import MetadataRepository
+    from .eval.evaluator import Evaluator, jpeg_transform
+    from .eval.threshold_check import run_threshold_check, with_mean_row, write_report
+
+    config = Config.load(args.config)
+    with MetadataRepository(config.get("paths.db_path")) as repo:
+        run_id = _resolve_run(repo, args.run_id, args.experiment_id)
+        checkpoint = args.checkpoint or _resolve_classifier_checkpoint(repo, run_id)
+
+    if args.ai_jpeg_quality is None:
+        ai_transform, condition, tag = None, "AI画像は元のまま（PNG）", "none"
+    else:
+        subsampling = args.subsampling or "4:2:0"
+        ai_transform = jpeg_transform(args.ai_jpeg_quality, args.subsampling)
+        condition = f"AI画像だけ JPEG 品質 {args.ai_jpeg_quality}・{subsampling}"
+        tag = f"aijpeg{args.ai_jpeg_quality}_s{subsampling.replace(':', '')}"
+    rule = ""
+    if args.real_false_alarm is not None:
+        rule = f"本物の val だけで、本物を AI と間違える割合が {args.real_false_alarm:g}% になる位置"
+        tag += f"_fa{args.real_false_alarm:g}"
+    with Evaluator(config, run_id, checkpoint) as evaluator:
+        results = run_threshold_check(evaluator, ai_transform, split=args.split, real_false_alarm=args.real_false_alarm)
+
+    out_dir = args.out or Path(config.get("paths.report_root", "reports")) / f"threshold_check_run{run_id}_{tag}"
+    path = write_report(results, out_dir, run_id, condition, rule)
+
+    def fmt(value) -> str:
+        return "N/A" if value is None else f"{value:.4f}"
+
+    print()
+    print(f"run_id={run_id} 条件: {condition}" + (f" 線: {rule}" if rule else ""))
+    print(f"{'生成器':<10}{'正解率':>9}{'本物':>9}{'AI画像':>9}{'上限':>9}{'AUC':>9}{'枚数':>8}")
+    for row in with_mean_row(results):
+        print(
+            f"{row['generator']:<10}{fmt(row['accuracy']):>9}{fmt(row['real_accuracy']):>9}{fmt(row['ai_accuracy']):>9}"
+            f"{fmt(row['best_accuracy']):>9}{fmt(row['auc']):>9}{row['num_samples']:>8}"
+        )
+    print(f"\nレポートを出力しました: {path}")
+    return 0
+
+
+def cmd_compare_models(args: argparse.Namespace) -> int:
+    from .eval.model_similarity import ModelSimilarity, with_mean_row, write_report
+
+    config = Config.load(args.config)
+    with ModelSimilarity(
+        config, args.photo_checkpoint, args.ai_checkpoint,
+        ai_jpeg_quality=args.ai_jpeg_quality, max_images=args.max_images,
+    ) as similarity:
+        results = similarity.run(split=args.split)
+        photo, ai, quality = similarity.photo_checkpoint, similarity.ai_checkpoint, similarity.ai_jpeg_quality
+
+    suffix = "" if quality is None else f"_aijpeg{quality}"
+    ai_name = "random" if ai == "random" else Path(ai).parent.name
+    out_dir = args.out or (
+        Path(config.get("paths.report_root", "reports")) / f"compare_{Path(photo).parent.name}_{ai_name}{suffix}"
+    )
+    path = write_report(results, out_dir, photo, ai, quality)
+
+    def fmt(value) -> str:
+        return "N/A" if value is None or value != value else f"{value:.4f}"
+
+    print()
+    print(f"pθ={photo}")
+    print(f"qφ={ai}")
+    print(
+        f"{'生成器':<10}{'CKA':>8}{'相関本物':>10}{'相関AI':>10}{'相関全部':>10}{'AUC pθ':>9}{'AUC qφ':>9}{'AUC差':>9}"
+        f"{'模様pθ':>9}{'模様qφ':>9}{'AUC模様':>9}{'枚数':>7}"
+    )
+    for row in with_mean_row(results):
+        print(
+            f"{row['generator']:<10}{fmt(row['cka']):>8}{fmt(row['spearman_real']):>10}{fmt(row['spearman_ai']):>10}"
+            f"{fmt(row['spearman_all']):>10}{fmt(row['auc_photo']):>9}{fmt(row['auc_ai']):>9}{fmt(row['auc_diff']):>9}"
+            f"{fmt(row['spearman_texture_photo']):>9}{fmt(row['spearman_texture_ai']):>9}{fmt(row['auc_texture']):>9}"
+            f"{row['num_samples']:>7}"
+        )
+    print(f"\nレポートを出力しました: {path}")
     return 0
 
 
@@ -517,6 +711,10 @@ def main(argv: list[str] | None = None) -> int:
         "train-stage2": cmd_train_stage2,
         "evaluate": cmd_evaluate,
         "evaluate-one-class": cmd_evaluate_one_class,
+        "compare-models": cmd_compare_models,
+        "jpeg-stats": cmd_jpeg_stats,
+        "subsampling-scores": cmd_subsampling_scores,
+        "threshold-check": cmd_threshold_check,
         "report": cmd_report,
         "export-bundle": cmd_export_bundle,
         "predict": cmd_predict,
