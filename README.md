@@ -2,8 +2,8 @@
 
 AI生成画像を見分けるモデル **DCCT**（Zhong, Xu, Zou. *Color Matters: Demosaicing-Guided Color Correlation Training for Generalizable AI-Generated Image Detection*, arXiv:2601.22778）を再現したコードと、学習済みモデルです。卒業研究チームで使うために、必要なものだけを置いています。
 
-- **学習済みモデル**：[`weights/dcct_C.pt`](weights/dcct_C.pt)（10/21 追加、いちばん新しい）、[`weights/dcct_A.pt`](weights/dcct_A.pt)、[`weights/dcct_B.pt`](weights/dcct_B.pt)。どれも1ファイルだけで判定できます
-- **ほかのモデルとつなぐ**：`DCCTDetector.embedding()` で、画像1枚から 256次元の特徴が取れます（A・B・C 共通）
+- **学習済みモデル**：[`weights/dcct_C.pt`](weights/dcct_C.pt)（10/21 追加）、[`weights/dcct_Cmix.pt`](weights/dcct_Cmix.pt)（11/5 追加、いちばん新しい）、[`weights/dcct_A.pt`](weights/dcct_A.pt)、[`weights/dcct_B.pt`](weights/dcct_B.pt)。どれも1ファイルだけで判定できます
+- **ほかのモデルとつなぐ**：`DCCTDetector.embedding()` で、画像1枚から 256次元の特徴が取れます（A・B・C・Cmix 共通）
 
 ---
 
@@ -21,24 +21,24 @@ AI生成画像を見分けるモデル **DCCT**（Zhong, Xu, Zou. *Color Matters
 
 ---
 
-## 配布しているモデル：`weights/dcct_A.pt`・`dcct_B.pt`・`dcct_C.pt`
+## 配布しているモデル：`weights/dcct_A.pt`・`dcct_B.pt`・`dcct_C.pt`・`dcct_Cmix.pt`
 
 どれも、pθ（・qφ）・分類器の重み、設定、判定の線（閾値）を1ファイルにまとめたものです。
 
-| | A（`dcct_A.pt`） | B（`dcct_B.pt`） | **C（`dcct_C.pt`）** |
-|---|---|---|---|
-| 作り | 論文どおり：±t = 7、pθ ＋ qφ | ±t = 2、pθ だけ | ±t = 7、pθ だけ |
-| 分類器に入る特徴 | 60チャンネル | 30チャンネル | 30チャンネル |
-| 分類器の学習での AI画像 | JPEG（品質 70〜95） | JPEG（品質 70〜95） | **JPEG（品質 96、色の間引き方も本物にそろえる）** |
-| 判定の線（閾値） | 0.4017 | 0.3284 | 0.4077 |
-| 線の決め方 | PNG のままの val で、本物と AI画像の正解率の和が最大 | 同じ | **本物の val だけで、上から 5%**（論文の DCCT† と同じ決め方） |
-| 元の実行 | run42（`configs/stage2_classifier_aijpeg.yaml`） | run43（`configs/stage2_classifier_t2_photo_only_aijpeg.yaml`） | run52（`configs/stage2_classifier_aijpeg_q96_mix_photo_only.yaml`） |
+| | A（`dcct_A.pt`） | B（`dcct_B.pt`） | **C（`dcct_C.pt`）** | Cmix（`dcct_Cmix.pt`） |
+|---|---|---|---|---|
+| 作り | 論文どおり：±t = 7、pθ ＋ qφ | ±t = 2、pθ だけ | ±t = 7、pθ だけ | C と同じ |
+| 分類器に入る特徴 | 60チャンネル | 30チャンネル | 30チャンネル | 30チャンネル |
+| 分類器の学習データ | GenImage の SD v1.4 と対応する ImageNet の写真 | 同じ | 同じ | **GenImage の7つの生成AI（SD1.4・SD1.5・ADM・GLIDE・Wukong・VQDM・BigGAN）の train を 1/7 ずつ混ぜたもの**（合計は生成AI 1つぶん） |
+| 分類器の学習での AI画像 | JPEG（品質 70〜95） | JPEG（品質 70〜95） | **JPEG（品質 96、色の間引き方も本物にそろえる）** | C と同じ |
+| 判定の線（閾値） | 0.4017 | 0.3284 | 0.4077 | 0.5322 |
+| 線の決め方 | PNG のままの val で、本物と AI画像の正解率の和が最大 | 同じ | **本物の val だけで、上から 5%**（論文の DCCT† と同じ決め方） | C と同じ（7つを混ぜた本物の val で） |
+| 元の実行 | run42（`configs/stage2_classifier_aijpeg.yaml`） | run43（`configs/stage2_classifier_t2_photo_only_aijpeg.yaml`） | run52（`configs/stage2_classifier_aijpeg_q96_mix_photo_only.yaml`） | run66（aotaku160601/DCCT の `configs/stage2_classifier_aijpeg_q96_mix_photo_only_genmix7.yaml`） |
 
 共通：
 
 - 30種のハイパスフィルタ、混合数 K = 10、64×64 のパッチを16か所
-- 学習データ：GenImage の SD v1.4（AI画像）と、対応する ImageNet の写真
-- **論文と違う点**：分類器の学習で、AI画像を JPEG にしてから使った（理由は下の「大事な注意」）
+- **論文と違う点**：分類器の学習で、AI画像を JPEG にしてから使った（理由は下の「大事な注意」）。Cmix は、学習に使う生成AIも論文（SD v1.4 だけ）と違う
 
 **どれを使う？** ふだんは **C** がおすすめです。A・B のあとに見つかった偏り（JPEG の品質と色の間引き方）までそろえて学習したモデルで、偏りを使えない評価でいちばん成績が良く（AUC .951）、どの評価のしかたでも .95 前後で安定しています。**論文と同じ形で比べたいときは A を使ってください。**
 
@@ -61,6 +61,28 @@ AUC（本物と AI画像の点数がどれだけきれいに分かれるか。1.
 | AI画像だけ JPEG（品質96・4:4:4） | .951 |
 | 本物も AI画像も PIL で JPEG（品質96）にかけ直す（いちばん厳しい） | .948 |
 | 種（乱数）だけ変えて学習し直したモデル（4:4:4） | .943 |
+
+### 成績：Cmix と C（11/5）
+
+同じ評価のしかた（AI画像だけ JPEG 品質96・4:4:4、線は本物の val の上から 5%）で、C と Cmix を並べた値です。生成AIごとに本物・AI画像 各1000枚。
+
+**GenImage の7つ（Cmix はどれも学習で見ている。C が見ているのは SD1.4 だけ）**
+
+| AUC | SD1.4 | SD1.5 | ADM | GLIDE | Wukong | VQDM | BigGAN | 平均 | 正解率 |
+|---|---|---|---|---|---|---|---|---|---|
+| C | .998 | .998 | .916 | .976 | .987 | .895 | .913 | .955 | 86.8% |
+| Cmix | .992 | .994 | .982 | .995 | .984 | .963 | .987 | **.985** | **94.4%** |
+
+**Misinfo の4つ（どちらも学習で見ていない生成AI）**：Pelekh（2025）のデータセット。AI画像は FLUX.1-dev・PixArt-α・SDXL-1.0・Imagen3、本物は COCO。本物の JPEG は品質 96 が約2/3・90 が約1/3 なので、AI画像も同じ割合の品質にそろえて評価しました。
+
+| AUC | FLUX.1-dev | PixArt-α | SDXL-1.0 | Imagen3 | 平均 | 正解率 |
+|---|---|---|---|---|---|---|
+| C | .922 | .889 | .941 | .914 | .916 | 73.3% |
+| Cmix | .935 | .898 | .903 | .892 | .907 | 71.0% |
+
+- **Cmix の特徴**：学習で見た7つでは C より強く（AUC +.031）、とくに C が苦手な ADM・VQDM・BigGAN が .98 前後まで上がります。見たことのない生成AI（Misinfo）では C と同じです（差 −.010、.02 未満）
+- GenImage の7つで「見たことのない生成AIへの強さ」を比べたいときは、Cmix はその7つを学習で見ているので、比べる相手として使えません
+- どちらも1回ずつの学習です
 
 ### 成績：A・B（10/7 時点）
 
@@ -89,7 +111,7 @@ JPEG にするときは、品質と**色の間引き方**（JPEG が色の情報
 
 - 本物（ImageNet）の JPEG は、多くが品質 96 で、約8割が 4:4:4
 - PIL で普通に JPEG にすると全部 4:2:0 になる。4:2:0 の画像は色が予測しやすいので、モデルはこの差も手がかりにしていました
-- C は、AI画像を品質 96 で、4:4:4 を8割・4:2:0 を2割にして学習しています
+- C・Cmix は、AI画像を品質 96 で、4:4:4 を8割・4:2:0 を2割にして学習しています
 
 **使うときのお願い**
 
@@ -97,7 +119,8 @@ JPEG にするときは、品質と**色の間引き方**（JPEG が色の情報
   ```python
   img.save("ai.jpg", quality=96, subsampling=0)   # PIL。subsampling=0 が 4:4:4、2 が 4:2:0
   ```
-- 判定の線は、A・B は PNG のままの AI画像で、C は本物の val だけで決めたものです。条件をそろえて比べるときは、**正解率より AUC で比べる**のがおすすめです
+- 本物の JPEG の品質がまちまちなデータでは、**AI画像も本物と同じ割合の品質にしてください**。DCCT の点数は JPEG の品質で全体がずれ、強く圧縮した画像ほど本物らしく見えます（C・Cmix とも）。品質がそろっていないと、AUC が良く見えすぎたり悪く見えすぎたりします
+- 判定の線は、A・B は PNG のままの AI画像で、C・Cmix は本物の val だけで決めたものです。条件をそろえて比べるときは、**正解率より AUC で比べる**のがおすすめです
 
 ---
 
@@ -120,7 +143,7 @@ pip install ipykernel
 python -m ipykernel install --user --name dcct --display-name "DCCT (.venv)"
 ```
 
-すでに clone している人は `git pull` で C とコードの更新が入ります（A・B はそのまま残っています）。
+すでに clone している人は `git pull` で C・Cmix とコードの更新が入ります（A・B はそのまま残っています）。
 
 **Google Colab で使うとき**：ノートブックの最初のセルで次を実行します。`%cd DCCT` でこのフォルダに入ると、`pip install -e .` なしで `from src...` が使えます。
 
@@ -137,8 +160,8 @@ from pathlib import Path
 from src.eval.bundle import DCCTDetector
 
 REPO = Path("/path/to/DCCT")    # clone した場所（Colab なら Path("/content/DCCT")）
-detector = DCCTDetector.from_bundle(REPO / "weights/dcct_C.pt")   # A・B なら dcct_A.pt・dcct_B.pt。device="cpu" なども指定できる
-print(detector.device, detector.threshold)   # 使う装置と判定の線（C は 0.4077）
+detector = DCCTDetector.from_bundle(REPO / "weights/dcct_C.pt")   # A・B・Cmix なら dcct_A.pt・dcct_B.pt・dcct_Cmix.pt。device="cpu" なども指定できる
+print(detector.device, detector.threshold)   # 使う装置と判定の線（C は 0.4077、Cmix は 0.5322）
 
 detector.score("photo.jpg")      # AIらしさ（0〜1）。16パッチの平均
 detector.predict("photo.jpg")    # 例: {"prob_ai": 0.93, "label": "ai", "threshold": 0.4077}
@@ -180,10 +203,10 @@ print("正解率:", (df["pred"] == df["label"]).mean())
 
 ```python
 detector.embedding("photo.jpg")       # 分類器の最後の層の手前の特徴。torch.Tensor [256]（16パッチの平均）
-detector.patch_features("photo.jpg")  # 分類器に入る特徴マップ。torch.Tensor [16, C, 64, 64]（C は A が 60、B・C が 30）
+detector.patch_features("photo.jpg")  # 分類器に入る特徴マップ。torch.Tensor [16, C, 64, 64]（C は A が 60、B・C・Cmix が 30）
 ```
 
-- ほかのモデルの特徴とつなぐ（3本目の枝として足す）なら、`embedding()` の 256次元（A・B・C 共通）を使うのがいちばん簡単です。もっと細かく使いたいときは `patch_features()` を使ってください
+- ほかのモデルの特徴とつなぐ（3本目の枝として足す）なら、`embedding()` の 256次元（A・B・C・Cmix 共通）を使うのがいちばん簡単です。もっと細かく使いたいときは `patch_features()` を使ってください
 - 返ってくるテンソルは `detector.device` の上にあります。numpy にするときは `.cpu().numpy()` を付けてください
 
 ### おまけ：ターミナルで判定する
@@ -244,7 +267,7 @@ dcct export-bundle --config configs/stage2_classifier_aijpeg_q96_mix_photo_only.
 
 | 場所 | 中身 |
 |---|---|
-| `weights/` | 配布する学習済みモデル（`dcct_A.pt`、`dcct_B.pt`、`dcct_C.pt`） |
+| `weights/` | 配布する学習済みモデル（`dcct_A.pt`、`dcct_B.pt`、`dcct_C.pt`、`dcct_Cmix.pt`） |
 | `src/preprocess/` | Bayer 配列で色を分ける、ハイパスフィルタ、パッチの切り出し |
 | `src/model/` | pθ・qφ（条件付き U-Net）、分類器、損失 |
 | `src/train/` | 学習（Stage I：pθ・qφ、Stage II：分類器） |
